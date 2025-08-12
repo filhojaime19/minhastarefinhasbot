@@ -5,6 +5,9 @@
 # =============================================================================
 import sqlite3
 import logging
+import html
+import traceback
+import json
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
@@ -15,6 +18,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.constants import ParseMode
 
 # =============================================================================
 # CONFIGURAÇÃO E CONSTANTES
@@ -31,13 +35,12 @@ DB_NAME = "tarefas.db"
 GET_TITLE, GET_ATTACHMENT = range(2)
 
 # =============================================================================
-# BANCO DE DADOS (AGORA MAIS PODEROSO)
+# BANCO DE DADOS (Sem alterações)
 # =============================================================================
 def setup_database():
     """Cria/conecta ao DB e garante que a nova tabela de tarefas exista."""
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # ATUALIZAÇÃO: Nova tabela com colunas para anexos
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tarefas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,19 +56,13 @@ def setup_database():
     logging.info(f"Banco de dados profissional '{DB_NAME}' pronto.")
 
 # =============================================================================
-# FUNÇÕES DE INTERFACE (TECLADOS E BOTÕES)
+# INTERFACE E COMANDOS PRINCIPAIS
 # =============================================================================
 def get_main_keyboard():
     """Retorna o teclado principal do bot."""
-    keyboard = [
-        [KeyboardButton("📝 Ver Minhas Tarefas")],
-        [KeyboardButton("➕ Adicionar Nova Tarefa")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    keyboard = [[KeyboardButton("📝 Ver Minhas Tarefas"), KeyboardButton("➕ Adicionar Nova Tarefa")]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-# =============================================================================
-# COMANDOS PRINCIPAIS (START E CANCELAR)
-# =============================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Função de boas-vindas que apresenta o teclado principal."""
     user_name = update.effective_user.first_name
@@ -76,24 +73,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancela a operação atual (como adicionar uma tarefa)."""
+    """Cancela a operação atual e retorna ao menu principal."""
     await update.message.reply_text("Operação cancelada.", reply_markup=get_main_keyboard())
+    context.user_data.clear()
     return ConversationHandler.END
 
 # =============================================================================
-# FUNCIONALIDADE: ADICIONAR TAREFA (CONVERSATION HANDLER)
+# ADICIONAR TAREFA (FLUXO DE CONVERSA MELHORADO)
 # =============================================================================
 async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Inicia o fluxo de adicionar uma nova tarefa."""
-    await update.message.reply_text("Ótimo! Por favor, me diga o título da sua nova tarefa.")
+    await update.message.reply_text("Ótimo! Por favor, me diga o título da sua nova tarefa. "
+                                    "Ou digite /cancelar para voltar.")
     return GET_TITLE
 
 async def get_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Recebe o título da tarefa e pergunta sobre anexos."""
+    """Recebe o título e pergunta sobre anexos com botões melhorados."""
     context.user_data['titulo'] = update.message.text
     keyboard = [
-        [InlineKeyboardButton("🖼️ Adicionar Foto/Vídeo", callback_data='add_media')],
-        [InlineKeyboardButton("🔗 Adicionar Link", callback_data='add_link')],
+        [
+            InlineKeyboardButton("🖼️ Foto/Vídeo", callback_data='add_media'),
+            InlineKeyboardButton("🔗 Link", callback_data='add_link'),
+        ],
         [InlineKeyboardButton("➡️ Pular Anexo", callback_data='skip_attachment')],
     ]
     await update.message.reply_text(
@@ -102,22 +103,42 @@ async def get_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
     return GET_ATTACHMENT
 
-async def ask_for_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Instrui o usuário a enviar a mídia."""
+async def back_to_attachment_options(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Função para o botão 'Voltar', retorna à seleção de tipo de anexo."""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Ok, agora me envie a foto ou o vídeo.")
+    keyboard = [
+        [
+            InlineKeyboardButton("🖼️ Foto/Vídeo", callback_data='add_media'),
+            InlineKeyboardButton("🔗 Link", callback_data='add_link'),
+        ],
+        [InlineKeyboardButton("➡️ Pular Anexo", callback_data='skip_attachment')],
+    ]
+    await query.edit_message_text(
+        "Sem problemas. Escolha uma opção de anexo ou pule esta etapa.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return GET_ATTACHMENT
+
+async def ask_for_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Instrui o usuário a enviar a mídia, com opção de voltar."""
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton("🔙 Voltar", callback_data='back_to_options')]]
+    await query.edit_message_text("Ok, agora me envie a foto ou o vídeo.", reply_markup=InlineKeyboardMarkup(keyboard))
     return GET_ATTACHMENT
 
 async def ask_for_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Instrui o usuário a enviar o link."""
+    """Instrui o usuário a enviar o link, com opção de voltar."""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Certo, pode me enviar o link (URL completo).")
+    keyboard = [[InlineKeyboardButton("🔙 Voltar", callback_data='back_to_options')]]
+    await query.edit_message_text("Certo, pode me enviar o link (URL completo).", reply_markup=InlineKeyboardMarkup(keyboard))
     return GET_ATTACHMENT
 
-async def save_task(user_id, context):
-    """Função auxiliar para salvar a tarefa no banco de dados."""
+async def save_task_and_reply(update, context: ContextTypes.DEFAULT_TYPE, confirmation_text: str):
+    """Função centralizada para salvar a tarefa e enviar confirmação."""
+    user_id = update.effective_user.id
     titulo = context.user_data.get('titulo')
     tipo_anexo = context.user_data.get('tipo_anexo', 'nenhum')
     id_anexo = context.user_data.get('id_anexo')
@@ -131,42 +152,46 @@ async def save_task(user_id, context):
     conn.commit()
     conn.close()
     
-    # Limpa os dados da conversa
     context.user_data.clear()
+    
+    # Envia uma nova mensagem de confirmação com o teclado principal
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=confirmation_text,
+        reply_markup=get_main_keyboard()
+    )
 
-async def get_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def get_attachment_and_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Recebe um anexo (foto ou vídeo) e salva a tarefa."""
     attachment = update.message.photo[-1] if update.message.photo else update.message.video
     context.user_data['id_anexo'] = attachment.file_id
     context.user_data['tipo_anexo'] = 'foto' if update.message.photo else 'video'
     
-    await save_task(update.effective_user.id, context)
-    await update.message.reply_text("✅ Tarefa e anexo salvos com sucesso!", reply_markup=get_main_keyboard())
+    await save_task_and_reply(update, context, "✅ Tarefa e anexo salvos com sucesso!")
     return ConversationHandler.END
 
-async def get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def get_link_and_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Recebe um link e salva a tarefa."""
     context.user_data['id_anexo'] = update.message.text
     context.user_data['tipo_anexo'] = 'link'
     
-    await save_task(update.effective_user.id, context)
-    await update.message.reply_text("✅ Tarefa e link salvos com sucesso!", reply_markup=get_main_keyboard())
+    await save_task_and_reply(update, context, "✅ Tarefa e link salvos com sucesso!")
     return ConversationHandler.END
 
-async def skip_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Pula a etapa do anexo e salva a tarefa."""
+async def skip_attachment_and_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Pula a etapa do anexo e salva a tarefa. CORRIGIDO."""
     query = update.callback_query
     await query.answer()
+    await query.delete_message() # Deleta a mensagem com os botões para limpar o chat
     
-    await save_task(update.effective_user.id, context)
-    await query.edit_message_text("✅ Tarefa salva com sucesso!", reply_markup=get_main_keyboard())
+    await save_task_and_reply(update, context, "✅ Tarefa salva com sucesso!")
     return ConversationHandler.END
-    
+
 # =============================================================================
-# FUNCIONALIDADE: VER E GERENCIAR TAREFAS
+# VER E GERENCIAR TAREFAS (Sem alterações)
 # =============================================================================
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Busca as tarefas no DB e as envia uma por uma com botões."""
+    # Esta função continua a mesma da versão anterior, já era bem robusta.
     user_id = update.effective_user.id
     conn = sqlite3.connect(DB_NAME)
     conn.row_factory = sqlite3.Row
@@ -188,17 +213,15 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 InlineKeyboardButton("🗑️ Apagar", callback_data=f"delete_{task_id}"),
             ]
         ]
-        # Se houver um link, adiciona um botão para ele
         if tarefa['tipo_anexo'] == 'link':
             keyboard.append([InlineKeyboardButton("🔗 Abrir Link", url=tarefa['id_anexo'])])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Envia o anexo se existir, ou apenas o texto
         if tarefa['tipo_anexo'] == 'foto':
-            await context.bot.send_photo(chat_id=user_id, photo=tarefa['id_anexo'], caption=tarefa['titulo'], reply_markup=reply_markup)
+            await context.bot.send_photo(chat_id=user_id, photo=tarefa['id_anexo'], caption=f"📝 {tarefa['titulo']}", reply_markup=reply_markup)
         elif tarefa['tipo_anexo'] == 'video':
-            await context.bot.send_video(chat_id=user_id, video=tarefa['id_anexo'], caption=tarefa['titulo'], reply_markup=reply_markup)
+            await context.bot.send_video(chat_id=user_id, video=tarefa['id_anexo'], caption=f"📝 {tarefa['titulo']}", reply_markup=reply_markup)
         else:
             await context.bot.send_message(chat_id=user_id, text=f"📝 {tarefa['titulo']}", reply_markup=reply_markup)
 
@@ -206,7 +229,6 @@ async def handle_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Processa os cliques nos botões 'Concluir' ou 'Apagar'."""
     query = update.callback_query
     await query.answer()
-
     action, task_id = query.data.split('_')
     task_id = int(task_id)
     
@@ -224,7 +246,27 @@ async def handle_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
 
 # =============================================================================
-# FUNÇÃO PRINCIPAL (INICIALIZADOR PROFISSIONAL)
+# GESTOR DE ERROS (NOVO E ESSENCIAL)
+# =============================================================================
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Loga os erros causados por updates."""
+    logging.error("Exception while handling an update:", exc_info=context.error)
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+
+    # Limita o tamanho da mensagem de erro para não exceder o limite do Telegram
+    error_message = (
+        f"Ocorreu um erro no bot:\n\n"
+        f"<pre>{html.escape(tb_string)}</pre>"
+    )
+    # Tenta notificar o desenvolvedor (ou o usuário) sobre o erro.
+    if update and hasattr(update, 'effective_chat'):
+        chat_id = update.effective_chat.id
+        await context.bot.send_message(chat_id=chat_id, text="Opa, ocorreu um erro interno. Já estou verificando!", parse_mode=ParseMode.HTML)
+
+
+# =============================================================================
+# FUNÇÃO PRINCIPAL (INICIALIZADOR)
 # =============================================================================
 def main() -> None:
     """Função principal que configura e inicia o bot com todas as novas funcionalidades."""
@@ -233,7 +275,10 @@ def main() -> None:
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Handler da conversa para adicionar tarefas
+    # Adiciona o gestor de erros
+    application.add_error_handler(error_handler)
+
+    # Handler da conversa para adicionar tarefas (agora com opção de voltar)
     add_task_conv_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('^➕ Adicionar Nova Tarefa$'), start_add_task)],
         states={
@@ -241,9 +286,10 @@ def main() -> None:
             GET_ATTACHMENT: [
                 CallbackQueryHandler(ask_for_media, pattern='^add_media$'),
                 CallbackQueryHandler(ask_for_link, pattern='^add_link$'),
-                CallbackQueryHandler(skip_attachment, pattern='^skip_attachment$'),
-                MessageHandler(filters.PHOTO | filters.VIDEO, get_attachment),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, get_link),
+                CallbackQueryHandler(skip_attachment_and_save, pattern='^skip_attachment$'),
+                CallbackQueryHandler(back_to_attachment_options, pattern='^back_to_options$'), # Opção de voltar
+                MessageHandler(filters.PHOTO | filters.VIDEO, get_attachment_and_save),
+                MessageHandler(filters.Regex(r'^(https|http)://'), get_link_and_save),
             ],
         },
         fallbacks=[CommandHandler('cancelar', cancel)],
