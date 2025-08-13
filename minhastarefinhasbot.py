@@ -492,4 +492,87 @@ async def handle_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn.close()
     except ValueError:
         logger.error(f"ID de tarefa inválido: {query.data}")
-        await query.edit_message_text("❌ Erro: t
+        await query.edit_message_text("❌ Erro: tarefa inválida.")
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao atualizar tarefa no banco de dados: {e}")
+        await query.edit_message_text("❌ Erro ao processar tarefa.")
+    except Exception as e:
+        logger.error(f"Erro inesperado ao processar botão: {e}")
+        await query.edit_message_text("❌ Ocorreu um erro.")
+
+# =============================================================================
+# COMANDO HELP
+# =============================================================================
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Mostra informações de ajuda sobre o bot."""
+    try:
+        help_text = """🤖 *Bot de Tarefas Pessoal*
+
+📝 *Comandos disponíveis:*
+• /start - Iniciar o bot
+• /help - Mostrar esta ajuda
+• /cancelar - Cancelar operação atual
+
+💡 *Como usar:*
+1. Clique em "➕ Nova Tarefa"
+2. Digite o título da tarefa
+3. Opcionalmente, adicione foto, vídeo ou link
+4. Veja suas tarefas em "📝 Minhas Tarefas"
+5. Conclua ou apague tarefas usando os botões
+
+✨ *Diferenciais:*
+• Interface profissional e intuitiva
+• Suporte para anexos diversos
+• Opção de voltar e cancelar a qualquer momento"""
+        
+        await update.message.reply_text(
+            help_text, 
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Erro no comando help: {e}")
+        await update.message.reply_text("❌ Ocorreu um erro. Tente novamente mais tarde.")
+
+# =============================================================================
+# FUNÇÃO PRINCIPAL (INICIALIZADOR PROFISSIONAL)
+# =============================================================================
+def main() -> None:
+    """Função principal que configura e inicia o bot com todas as novas funcionalidades."""
+    try:
+        logger.info("Iniciando o bot profissional...")
+        setup_database()
+
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+        # Handler da conversa para adicionar tarefas
+        add_task_conv_handler = ConversationHandler(
+            entry_points=[MessageHandler(filters.Regex('^➕ Nova Tarefa$'), start_add_task)],
+            states={
+                GET_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_title)],
+                GET_ATTACHMENT: [
+                    CallbackQueryHandler(handle_attachment_choice, pattern='^(add_media|add_link|skip_attachment|back_to_title|cancel_operation)$'),
+                    MessageHandler(filters.PHOTO | filters.VIDEO, get_attachment),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, get_link),
+                ],
+                GET_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_link)],
+            },
+            fallbacks=[CommandHandler('cancelar', cancel)],
+        )
+
+        application.add_handler(add_task_conv_handler)
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("cancelar", cancel))
+        application.add_handler(MessageHandler(filters.Regex('^📝 Minhas Tarefas$'), list_tasks))
+        application.add_handler(MessageHandler(filters.Regex('^❓ Sobre$'), about))
+        application.add_handler(CallbackQueryHandler(handle_task_button, pattern='^(done|delete)_'))
+        
+        logger.info("Bot em modo profissional. Aguardando comandos e interações.")
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"Erro fatal ao iniciar o bot: {e}")
+        raise
+
+if __name__ == '__main__':
+    main()
