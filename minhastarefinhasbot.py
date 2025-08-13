@@ -161,6 +161,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             "❌ Operação cancelada.", 
             reply_markup=get_main_keyboard()
         )
+        # Limpa os dados da conversa
+        context.user_data.clear()
         return ConversationHandler.END
     except Exception as e:
         logger.error(f"Erro no comando cancel: {e}")
@@ -187,11 +189,13 @@ async def get_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Recebe o título da tarefa e pergunta sobre anexos."""
     try:
         # Verifica se o usuário quer cancelar
-        if update.message.text == '/cancelar':
+        if update.message.text.startswith('/cancelar'):
             await update.message.reply_text(
                 "❌ Operação cancelada.", 
                 reply_markup=get_main_keyboard()
             )
+            # Limpa os dados da conversa
+            context.user_data.clear()
             return ConversationHandler.END
             
         context.user_data['titulo'] = update.message.text
@@ -215,7 +219,8 @@ async def handle_attachment_choice(update: Update, context: ContextTypes.DEFAULT
         if query.data == 'add_media':
             await query.edit_message_text(
                 "📸 *Adicionar Foto/Vídeo*\n\nAgora me envie a foto ou o vídeo.\n\n"
-                "👉 *Dica:* Você pode tirar uma foto direto do Telegram!",
+                "👉 *Dica:* Você pode tirar uma foto direto do Telegram!\n\n"
+                " OU envie /cancelar para cancelar a operação.",
                 parse_mode='Markdown',
                 reply_markup=get_cancel_keyboard()
             )
@@ -223,7 +228,8 @@ async def handle_attachment_choice(update: Update, context: ContextTypes.DEFAULT
             
         elif query.data == 'add_link':
             await query.edit_message_text(
-                "🔗 *Adicionar Link*\n\nPor favor, envie o link completo (começando com http:// ou https://)",
+                "🔗 *Adicionar Link*\n\nPor favor, envie o link completo (começando com http:// ou https://)\n\n"
+                " OU envie /cancelar para cancelar a operação.",
                 parse_mode='Markdown',
                 reply_markup=get_cancel_keyboard()
             )
@@ -269,6 +275,8 @@ async def handle_attachment_choice(update: Update, context: ContextTypes.DEFAULT
                 parse_mode='Markdown',
                 reply_markup=get_main_keyboard()
             )
+            # Limpa os dados da conversa
+            context.user_data.clear()
             return ConversationHandler.END
             
     except Exception as e:
@@ -307,6 +315,16 @@ async def save_task(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
 async def get_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Recebe um anexo (foto ou vídeo) e salva a tarefa."""
     try:
+        # Verifica se o usuário quer cancelar
+        if update.message.text.startswith('/cancelar'):
+            await update.message.reply_text(
+                "❌ Operação cancelada.", 
+                reply_markup=get_main_keyboard()
+            )
+            # Limpa os dados da conversa
+            context.user_data.clear()
+            return ConversationHandler.END
+            
         if update.message.photo:
             attachment = update.message.photo[-1]
             context.user_data['id_anexo'] = attachment.file_id
@@ -317,7 +335,8 @@ async def get_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             context.user_data['tipo_anexo'] = 'video'
         else:
             await update.message.reply_text(
-                "❌ Tipo de anexo não suportado.\n\nPor favor, envie uma foto ou vídeo.",
+                "❌ Tipo de anexo não suportado.\n\nPor favor, envie uma foto ou vídeo.\n\n"
+                " OU envie /cancelar para cancelar a operação.",
                 reply_markup=get_cancel_keyboard()
             )
             return GET_ATTACHMENT
@@ -346,12 +365,23 @@ async def get_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Recebe um link e salva a tarefa."""
     try:
+        # Verifica se o usuário quer cancelar
+        if update.message.text.startswith('/cancelar'):
+            await update.message.reply_text(
+                "❌ Operação cancelada.", 
+                reply_markup=get_main_keyboard()
+            )
+            # Limpa os dados da conversa
+            context.user_data.clear()
+            return ConversationHandler.END
+            
         link_text = update.message.text
         
         # Validação básica de URL
         if not (link_text.startswith('http://') or link_text.startswith('https://')):
             await update.message.reply_text(
-                "❌ Por favor, envie um link válido (começando com http:// ou https://)",
+                "❌ Por favor, envie um link válido (começando com http:// ou https://)\n\n"
+                " OU envie /cancelar para cancelar a operação.",
                 reply_markup=get_cancel_keyboard()
             )
             return GET_LINK
@@ -463,116 +493,4 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as e:
         logger.error(f"Erro inesperado ao listar tarefas: {e}")
         await update.message.reply_text(
-            "❌ Ocorreu um erro. Tente novamente mais tarde.",
-            reply_markup=get_main_keyboard()
-        )
-
-async def handle_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Processa os cliques nos botões 'Concluir' ou 'Apagar'."""
-    try:
-        query = update.callback_query
-        await query.answer()
-
-        action, task_id = query.data.split('_')
-        task_id = int(task_id)
-        
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        if action == "done":
-            cursor.execute("UPDATE tarefas SET concluida = 1 WHERE id = ?", (task_id,))
-            await query.edit_message_text("✅ *Tarefa concluída com sucesso!*\n\nParabéns por manter-se organizado! 👍", parse_mode='Markdown')
-            logger.info(f"Tarefa {task_id} concluída")
-        elif action == "delete":
-            cursor.execute("DELETE FROM tarefas WHERE id = ?", (task_id,))
-            await query.edit_message_text("🗑️ *Tarefa apagada permanentemente*\n\nEsperamos que tenha concluído!", parse_mode='Markdown')
-            logger.info(f"Tarefa {task_id} deletada")
-        
-        conn.commit()
-        conn.close()
-    except ValueError:
-        logger.error(f"ID de tarefa inválido: {query.data}")
-        await query.edit_message_text("❌ Erro: tarefa inválida.")
-    except sqlite3.Error as e:
-        logger.error(f"Erro ao atualizar tarefa no banco de dados: {e}")
-        await query.edit_message_text("❌ Erro ao processar tarefa.")
-    except Exception as e:
-        logger.error(f"Erro inesperado ao processar botão: {e}")
-        await query.edit_message_text("❌ Ocorreu um erro.")
-
-# =============================================================================
-# COMANDO HELP
-# =============================================================================
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Mostra informações de ajuda sobre o bot."""
-    try:
-        help_text = """🤖 *Bot de Tarefas Pessoal*
-
-📝 *Comandos disponíveis:*
-• /start - Iniciar o bot
-• /help - Mostrar esta ajuda
-• /cancelar - Cancelar operação atual
-
-💡 *Como usar:*
-1. Clique em "➕ Nova Tarefa"
-2. Digite o título da tarefa
-3. Opcionalmente, adicione foto, vídeo ou link
-4. Veja suas tarefas em "📝 Minhas Tarefas"
-5. Conclua ou apague tarefas usando os botões
-
-✨ *Diferenciais:*
-• Interface profissional e intuitiva
-• Suporte para anexos diversos
-• Opção de voltar e cancelar a qualquer momento"""
-        
-        await update.message.reply_text(
-            help_text, 
-            parse_mode='Markdown',
-            reply_markup=get_main_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Erro no comando help: {e}")
-        await update.message.reply_text("❌ Ocorreu um erro. Tente novamente mais tarde.")
-
-# =============================================================================
-# FUNÇÃO PRINCIPAL (INICIALIZADOR PROFISSIONAL)
-# =============================================================================
-def main() -> None:
-    """Função principal que configura e inicia o bot com todas as novas funcionalidades."""
-    try:
-        logger.info("Iniciando o bot profissional...")
-        setup_database()
-
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-        # Handler da conversa para adicionar tarefas
-        add_task_conv_handler = ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex('^➕ Nova Tarefa$'), start_add_task)],
-            states={
-                GET_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_task_title)],
-                GET_ATTACHMENT: [
-                    CallbackQueryHandler(handle_attachment_choice, pattern='^(add_media|add_link|skip_attachment|back_to_title|cancel_operation)$'),
-                    MessageHandler(filters.PHOTO | filters.VIDEO, get_attachment),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, get_link),
-                ],
-                GET_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_link)],
-            },
-            fallbacks=[CommandHandler('cancelar', cancel)],
-        )
-
-        application.add_handler(add_task_conv_handler)
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("cancelar", cancel))
-        application.add_handler(MessageHandler(filters.Regex('^📝 Minhas Tarefas$'), list_tasks))
-        application.add_handler(MessageHandler(filters.Regex('^❓ Sobre$'), about))
-        application.add_handler(CallbackQueryHandler(handle_task_button, pattern='^(done|delete)_'))
-        
-        logger.info("Bot em modo profissional. Aguardando comandos e interações.")
-        application.run_polling()
-    except Exception as e:
-        logger.error(f"Erro fatal ao iniciar o bot: {e}")
-        raise
-
-if __name__ == '__main__':
-    main()
+            "❌ Ocorreu um erro. Te
