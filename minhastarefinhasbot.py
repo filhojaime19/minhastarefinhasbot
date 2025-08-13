@@ -25,13 +25,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 🚨 TOKEN AGORA VEM DE VARIÁVEL DE AMBIENTE 🚨
-# Substituindo o método de obtenção do token para uso direto.
-TELEGRAM_TOKEN = "8272131356:AAGi_CDSPoFDCEq53WhPorWH1NG5nKdAayA"  # INSIRA SEU TOKEN AQUI DIRETAMENTE
-
-if not TELEGRAM_TOKEN:
-    logger.error("TOKEN NÃO ENCONTRADO! Configure a variável de ambiente TELEGRAM_TOKEN")
-    exit(1)
+# 🚨 TOKEN EMBUTIDO (APENAS PARA TESTE - NÃO USAR EM PRODUÇÃO) 🚨
+TELEGRAM_TOKEN = "8272131356:AAGi_CDSPoFDCEq53WhPorWH1NG5nKdAayA"
 
 DB_NAME = "tarefas.db"
 
@@ -44,8 +39,11 @@ GET_TITLE, GET_ATTACHMENT, GET_LINK = range(3)
 def setup_database():
     """Cria/conecta ao DB e garante que a nova tabela de tarefas exista."""
     try:
+        logger.info("Tentando criar/conectar ao banco de dados...")
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
+        logger.info("Conexão com banco estabelecida com sucesso")
+        
         # ATUALIZAÇÃO: Nova tabela com colunas para anexos
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS tarefas (
@@ -61,7 +59,10 @@ def setup_database():
         conn.close()
         logger.info(f"Banco de dados profissional '{DB_NAME}' pronto.")
     except sqlite3.Error as e:
-        logger.error(f"Erro ao configurar banco de dados: {e}")
+        logger.error(f"Erro SQLite ao configurar banco de dados: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Erro geral ao configurar banco de dados: {e}")
         raise
 
 # =============================================================================
@@ -165,4 +166,330 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         logger.error(f"Erro no comando cancel: {e}")
         return ConversationHandler.END
 
-# Continua o código para outras funcionalidades, conforme descrito acima...
+# =============================================================================
+# FUNCIONALIDADE: ADICIONAR TAREFA (CONVERSATION HANDLER)
+# =============================================================================
+async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Inicia o fluxo de adicionar uma nova tarefa."""
+    try:
+        await update.message.reply_text(
+            "📝 *Nova Tarefa*\n\nPor favor, me diga o título da sua nova tarefa:",
+            parse_mode='Markdown',
+            reply_markup=get_cancel_keyboard()
+        )
+        return GET_TITLE
+    except Exception as e:
+        logger.error(f"Erro ao iniciar adição de tarefa: {e}")
+        await update.message.reply_text("❌ Ocorreu um erro. Tente novamente mais tarde.")
+        return ConversationHandler.END
+
+async def get_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Recebe o título da tarefa e pergunta sobre anexos."""
+    try:
+        # Verifica se o usuário quer cancelar
+        if update.message.text == '/cancelar':
+            await update.message.reply_text(
+                "❌ Operação cancelada.", 
+                reply_markup=get_main_keyboard()
+            )
+            return ConversationHandler.END
+            
+        context.user_data['titulo'] = update.message.text
+        await update.message.reply_text(
+            f"✅ Título definido: *{update.message.text}*\n\nDeseja adicionar um anexo a esta tarefa?",
+            parse_mode='Markdown',
+            reply_markup=get_attachment_keyboard()
+        )
+        return GET_ATTACHMENT
+    except Exception as e:
+        logger.error(f"Erro ao receber título da tarefa: {e}")
+        await update.message.reply_text("❌ Ocorreu um erro. Tente novamente mais tarde.")
+        return ConversationHandler.END
+
+async def handle_attachment_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Processa a escolha do tipo de anexo."""
+    try:
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == 'add_media':
+            await query.edit_message_text(
+                "📸 *Adicionar Foto/Vídeo*\n\nAgora me envie a foto ou o vídeo.\n\n"
+                "👉 *Dica:* Você pode tirar uma foto direto do Telegram!",
+                parse_mode='Markdown',
+                reply_markup=get_cancel_keyboard()
+            )
+            return GET_ATTACHMENT
+            
+        elif query.data == 'add_link':
+            await query.edit_message_text(
+                "🔗 *Adicionar Link*\n\nPor favor, envie o link completo (começando com http:// ou https://)",
+                parse_mode='Markdown',
+                reply_markup=get_cancel_keyboard()
+            )
+            return GET_LINK
+            
+        elif query.data == 'skip_attachment':
+            success = await save_task(update.effective_user.id, context)
+            if success:
+                await query.edit_message_text(
+                    "✅ *Tarefa salva com sucesso!*\n\nSua tarefa foi adicionada à lista.",
+                    parse_mode='Markdown',
+                    reply_markup=None
+                )
+                # Mostra o menu principal após um pequeno delay
+                await context.bot.send_message(
+                    chat_id=update.effective_user.id,
+                    text="📋 *Menu Principal*",
+                    parse_mode='Markdown',
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ Erro ao salvar tarefa. Tente novamente.",
+                    reply_markup=get_main_keyboard()
+                )
+            return ConversationHandler.END
+            
+        elif query.data == 'back_to_title':
+            await query.edit_message_text(
+                "📝 *Nova Tarefa*\n\nPor favor, me diga o título da sua nova tarefa:",
+                parse_mode='Markdown',
+                reply_markup=get_cancel_keyboard()
+            )
+            # Limpa os dados anteriores
+            context.user_data.clear()
+            return GET_TITLE
+            
+        elif query.data == 'cancel_operation':
+            await query.edit_message_text("❌ Operação cancelada.")
+            await context.bot.send_message(
+                chat_id=update.effective_user.id,
+                text="📋 *Menu Principal*",
+                parse_mode='Markdown',
+                reply_markup=get_main_keyboard()
+            )
+            return ConversationHandler.END
+            
+    except Exception as e:
+        logger.error(f"Erro ao processar escolha de anexo: {e}")
+        if update.callback_query:
+            await update.callback_query.edit_message_text("❌ Ocorreu um erro.")
+        return ConversationHandler.END
+
+async def save_task(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Função auxiliar para salvar a tarefa no banco de dados."""
+    try:
+        titulo = context.user_data.get('titulo')
+        tipo_anexo = context.user_data.get('tipo_anexo', 'nenhum')
+        id_anexo = context.user_data.get('id_anexo')
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO tarefas (user_id, titulo, tipo_anexo, id_anexo) VALUES (?, ?, ?, ?)",
+            (user_id, titulo, tipo_anexo, id_anexo)
+        )
+        conn.commit()
+        conn.close()
+        
+        # Limpa os dados da conversa
+        context.user_data.clear()
+        logger.info(f"Tarefa salva com sucesso para o usuário {user_id}")
+        return True
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao salvar tarefa no banco de dados: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Erro inesperado ao salvar tarefa: {e}")
+        return False
+
+async def get_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Recebe um anexo (foto ou vídeo) e salva a tarefa."""
+    try:
+        if update.message.photo:
+            attachment = update.message.photo[-1]
+            context.user_data['id_anexo'] = attachment.file_id
+            context.user_data['tipo_anexo'] = 'foto'
+        elif update.message.video:
+            attachment = update.message.video
+            context.user_data['id_anexo'] = attachment.file_id
+            context.user_data['tipo_anexo'] = 'video'
+        else:
+            await update.message.reply_text(
+                "❌ Tipo de anexo não suportado.\n\nPor favor, envie uma foto ou vídeo.",
+                reply_markup=get_cancel_keyboard()
+            )
+            return GET_ATTACHMENT
+
+        success = await save_task(update.effective_user.id, context)
+        if success:
+            await update.message.reply_text(
+                "✅ *Tarefa e anexo salvos com sucesso!*\n\nSua tarefa foi adicionada à lista.",
+                parse_mode='Markdown',
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Erro ao salvar tarefa. Tente novamente.",
+                reply_markup=get_main_keyboard()
+            )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Erro ao receber anexo: {e}")
+        await update.message.reply_text(
+            "❌ Ocorreu um erro. Tente novamente mais tarde.",
+            reply_markup=get_main_keyboard()
+        )
+        return ConversationHandler.END
+
+async def get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Recebe um link e salva a tarefa."""
+    try:
+        link_text = update.message.text
+        
+        # Validação básica de URL
+        if not (link_text.startswith('http://') or link_text.startswith('https://')):
+            await update.message.reply_text(
+                "❌ Por favor, envie um link válido (começando com http:// ou https://)",
+                reply_markup=get_cancel_keyboard()
+            )
+            return GET_LINK
+            
+        context.user_data['id_anexo'] = link_text
+        context.user_data['tipo_anexo'] = 'link'
+        
+        success = await save_task(update.effective_user.id, context)
+        if success:
+            await update.message.reply_text(
+                "✅ *Tarefa e link salvos com sucesso!*\n\nSua tarefa foi adicionada à lista.",
+                parse_mode='Markdown',
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Erro ao salvar tarefa. Tente novamente.",
+                reply_markup=get_main_keyboard()
+            )
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Erro ao receber link: {e}")
+        await update.message.reply_text(
+            "❌ Ocorreu um erro. Tente novamente mais tarde.",
+            reply_markup=get_main_keyboard()
+        )
+        return ConversationHandler.END
+
+# =============================================================================
+# FUNCIONALIDADE: VER E GERENCIAR TAREFAS
+# =============================================================================
+async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Busca as tarefas no DB e as envia uma por uma com botões."""
+    try:
+        user_id = update.effective_user.id
+        conn = sqlite3.connect(DB_NAME)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, titulo, tipo_anexo, id_anexo FROM tarefas WHERE user_id = ? AND concluida = 0", (user_id,))
+        tarefas = cursor.fetchall()
+        conn.close()
+
+        if not tarefas:
+            await update.message.reply_text(
+                "🎉 *Parabéns!*\n\nVocê está em dia! Nenhuma tarefa pendente.\n\nContinue assim! ✨",
+                parse_mode='Markdown',
+                reply_markup=get_main_keyboard()
+            )
+            return
+
+        await update.message.reply_text(
+            "📋 *Suas Tarefas Pendentes*\n\nAqui estão as tarefas que você precisa completar:",
+            parse_mode='Markdown'
+        )
+        
+        for tarefa in tarefas:
+            task_id = tarefa['id']
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Concluir", callback_data=f"done_{task_id}"),
+                    InlineKeyboardButton("🗑️ Apagar", callback_data=f"delete_{task_id}"),
+                ]
+            ]
+            # Se houver um link, adiciona um botão para ele
+            if tarefa['tipo_anexo'] == 'link':
+                keyboard.insert(0, [InlineKeyboardButton("🔗 Abrir Link", url=tarefa['id_anexo'])])
+
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Envia o anexo se existir, ou apenas o texto
+            try:
+                if tarefa['tipo_anexo'] == 'foto':
+                    await context.bot.send_photo(
+                        chat_id=user_id, 
+                        photo=tarefa['id_anexo'], 
+                        caption=f"📝 *{tarefa['titulo']}*",
+                        parse_mode='Markdown',
+                        reply_markup=reply_markup
+                    )
+                elif tarefa['tipo_anexo'] == 'video':
+                    await context.bot.send_video(
+                        chat_id=user_id, 
+                        video=tarefa['id_anexo'], 
+                        caption=f"📝 *{tarefa['titulo']}*",
+                        parse_mode='Markdown',
+                        reply_markup=reply_markup
+                    )
+                else:
+                    await context.bot.send_message(
+                        chat_id=user_id, 
+                        text=f"📝 *{tarefa['titulo']}*",
+                        parse_mode='Markdown',
+                        reply_markup=reply_markup
+                    )
+            except Exception as e:
+                logger.error(f"Erro ao enviar tarefa {task_id}: {e}")
+                await context.bot.send_message(
+                    chat_id=user_id, 
+                    text=f"❌ Erro ao carregar tarefa: *{tarefa['titulo']}*",
+                    parse_mode='Markdown'
+                )
+                
+    except sqlite3.Error as e:
+        logger.error(f"Erro ao buscar tarefas do banco de dados: {e}")
+        await update.message.reply_text(
+            "❌ Erro ao buscar tarefas. Tente novamente mais tarde.",
+            reply_markup=get_main_keyboard()
+        )
+    except Exception as e:
+        logger.error(f"Erro inesperado ao listar tarefas: {e}")
+        await update.message.reply_text(
+            "❌ Ocorreu um erro. Tente novamente mais tarde.",
+            reply_markup=get_main_keyboard()
+        )
+
+async def handle_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Processa os cliques nos botões 'Concluir' ou 'Apagar'."""
+    try:
+        query = update.callback_query
+        await query.answer()
+
+        action, task_id = query.data.split('_')
+        task_id = int(task_id)
+        
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        if action == "done":
+            cursor.execute("UPDATE tarefas SET concluida = 1 WHERE id = ?", (task_id,))
+            await query.edit_message_text("✅ *Tarefa concluída com sucesso!*\n\nParabéns por manter-se organizado! 👍", parse_mode='Markdown')
+            logger.info(f"Tarefa {task_id} concluída")
+        elif action == "delete":
+            cursor.execute("DELETE FROM tarefas WHERE id = ?", (task_id,))
+            await query.edit_message_text("🗑️ *Tarefa apagada permanentemente*\n\nEsperamos que tenha concluído!", parse_mode='Markdown')
+            logger.info(f"Tarefa {task_id} deletada")
+        
+        conn.commit()
+        conn.close()
+    except ValueError:
+        logger.error(f"ID de tarefa inválido: {query.data}")
+        await query.edit_message_text("❌ Erro: t
